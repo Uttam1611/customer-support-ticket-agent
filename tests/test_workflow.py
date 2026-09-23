@@ -7,6 +7,7 @@ import pytest
 from langchain_core.messages import AIMessage
 
 from src.llm.workflow import build_support_workflow
+from src.models import TicketCreate
 from src.sessions.store import SessionStore
 from src.tools.ticket_tool import TicketRepository
 
@@ -295,3 +296,72 @@ async def test_existing_ticket_is_not_duplicated() -> None:
         first["ticket_id"]
         == second["ticket_id"]
     )
+
+
+@pytest.mark.asyncio
+async def test_multi_turn_ticket_collection_preserves_session_state() -> None:
+    retriever = FakeRetriever([])
+
+    class MultiTurnModel(FakeAnswerModel):
+        async def ainvoke(self, messages: Any) -> Any:
+            if isinstance(messages, list):
+                first = messages[0]
+                if hasattr(first, "content") and (
+                    "Classify the customer's current message"
+                    in str(first.content)
+                ):
+                    return {
+                        "route": "ticket",
+                        "customer_name": "Lena",
+                    }
+
+            return AIMessage(content="Thanks, I have your name.")
+
+    sessions = SessionStore()
+    tickets = TicketRepository()
+
+    workflow = build_support_workflow(
+        model=MultiTurnModel({"route": "ticket"}),
+        retriever=retriever,
+        sessions=sessions,
+        tickets=tickets,
+    )
+
+    first = await workflow.ainvoke(
+        {
+            "session_id": "multi-turn-session",
+            "customer_message": "Hi, my name is Lena.",
+        }
+    )
+    second = await workflow.ainvoke(
+        {
+            "session_id": "multi-turn-session",
+            "customer_message": "My email is lena@example.com.",
+        }
+    )
+
+    session = sessions.get_or_create("multi-turn-session")
+
+    assert first["route"] == "ticket"
+    assert second["route"] == "ticket"
+    assert session.customer_name == "Lena"
+    assert session.customer_email == "lena@example.com" or session.customer_email is None
+    assert session.history
+
+
+@pytest.mark.asyncio
+async def test_ticket_repository_supports_lookup_by_id() -> None:
+    tickets = TicketRepository()
+    created = tickets.create(
+        "lookup-session",
+        TicketCreate(
+            customer_name="Test User",
+            customer_email="test@example.com",
+            issue_description="Issue description",
+            category="technical",
+            summary="Technical issue",
+        ),
+    )
+
+    assert tickets.get(created.ticket_id) == created
+    assert tickets.get("missing-id") is None

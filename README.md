@@ -36,6 +36,20 @@ Complete the TODOs in:
 
 You may add or reorganize files when the resulting design remains clear and testable.
 
+Voice providers
+---------------
+STT: Google Speech Recognition through the SpeechRecognition library.
+It was selected because it provides a lightweight individual STT adapter
+without introducing a complete conversational framework.
+
+TTS: Microsoft Edge TTS through the edge-tts library.
+It was selected because it provides direct text-to-speech synthesis without
+requiring an API key or a high-level conversational platform.
+
+Voice input is converted to editable text before entering the existing
+POST /chat workflow. TTS is generated only when the user activates the
+speaker control for an assistant response.pytest -q
+
 ## Requirements
 
 - Python 3.11 or newer.

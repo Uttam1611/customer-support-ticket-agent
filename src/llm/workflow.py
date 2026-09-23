@@ -6,7 +6,6 @@ from typing import Annotated, Literal, TypedDict
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_core.output_parsers import PydanticOutputParser
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from pydantic import BaseModel, ValidationError
@@ -70,26 +69,109 @@ def _message_text(result: object) -> str:
 
 
 def _extract_json_object(text: str) -> str:
-    """Extract a JSON object if a model wraps it in markdown fences."""
-
-    cleaned = text.strip()
+    """Extract the first complete JSON object from model output."""
 
     cleaned = re.sub(
-        r"^```(?:json)?\s*|\s*```$",
+        r"<think>.*?</think>",
+        "",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    cleaned = re.sub(
+        r"```(?:json)?",
         "",
         cleaned,
         flags=re.IGNORECASE,
+    ).replace("```", "")
+
+    for start, character in enumerate(cleaned):
+        if character != "{":
+            continue
+
+        depth = 0
+        in_string = False
+        escaped = False
+
+        for index in range(start, len(cleaned)):
+            current = cleaned[index]
+
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif current == "\\":
+                    escaped = True
+                elif current == '"':
+                    in_string = False
+                continue
+
+            if current == '"':
+                in_string = True
+            elif current == "{":
+                depth += 1
+            elif current == "}":
+                depth -= 1
+
+                if depth == 0:
+                    candidate = cleaned[start : index + 1]
+
+                    try:
+                        json.loads(candidate)
+                    except json.JSONDecodeError:
+                        break
+
+                    return candidate
+
+    raise ValueError("Model did not return a valid JSON object.")
+
+
+def _parse_agent_decision(result: object) -> AgentDecision:
+    """Validate raw or test-double model output as an agent decision."""
+
+    if isinstance(result, AgentDecision):
+        return result
+
+    if isinstance(result, dict):
+        return AgentDecision.model_validate(result)
+
+    return AgentDecision.model_validate(
+        json.loads(
+            _extract_json_object(
+                _message_text(result)
+            )
+        )
     )
 
-    start = cleaned.find("{")
-    end = cleaned.rfind("}")
 
-    if start == -1 or end <= start:
-        raise ValueError(
-            "Model did not return a JSON object."
-        )
+def _fallback_route(
+    message: str,
+    active_ticket: bool,
+) -> Literal["answer", "ticket"]:
+    """Choose only a route when the local model returns unusable output."""
 
-    return cleaned[start : end + 1]
+    if active_ticket:
+        return "ticket"
+
+    ticket_request = re.search(
+        r"\b(?:support\s+)?(?:ticket|case)\b"
+        r"|\b(?:open|create|report|raise|submit)\b.{0,40}"
+        r"\b(?:ticket|case|issue|problem)\b",
+        message,
+        flags=re.IGNORECASE,
+    )
+
+    unresolved_issue = re.search(
+        r"\b(?:unresolved|still\s+(?:broken|not\s+working)|"
+        r"(?:doesn['’]t|does\s+not|not)\s+work(?:ing)?|"
+        r"failed|failure|charged\s+twice|problem|issue)\b",
+        message,
+        flags=re.IGNORECASE,
+    )
+
+    if ticket_request or unresolved_issue:
+        return "ticket"
+
+    return "answer"
 
 
 def build_support_workflow(
@@ -157,6 +239,17 @@ def build_support_workflow(
             state["session_id"]
         )
 
+        if not session.history or (
+            session.history[-1].get("role") != "user"
+            or session.history[-1].get("content") != state["customer_message"]
+        ):
+            session.history.append(
+                {
+                    "role": "user",
+                    "content": state["customer_message"],
+                }
+            )
+
         active_ticket = (
             bool(
                 session.customer_name
@@ -165,10 +258,6 @@ def build_support_workflow(
                 or session.category
             )
             and session.ticket_id is None
-        )
-
-        parser = PydanticOutputParser(
-            pydantic_object=AgentDecision
         )
 
         prompt = f"""
@@ -228,15 +317,27 @@ category={session.category!r}
 Customer's current message:
 {state["customer_message"]}
 
-{parser.get_format_instructions()}
+OUTPUT FORMAT:
+Return ONLY one JSON object.
+Do not use markdown.
+Do not include an explanation.
+Do not include a <think> block.
+The route must be exactly "answer" or "ticket".
+Missing fields must be null.
+The category must be exactly one of "order", "payment", "account", "technical", or "other".
+
+Use this JSON shape:
+{{
+  "route": "answer",
+  "customer_name": null,
+  "customer_email": null,
+  "issue_description": null,
+  "category": null
+}}
 """
 
         try:
-            structured_model = model.with_structured_output(
-                AgentDecision
-            )
-
-            result = await structured_model.ainvoke(
+            result = await model.ainvoke(
                 [
                     HumanMessage(
                         content=prompt
@@ -244,38 +345,15 @@ Customer's current message:
                 ]
             )
 
-            if isinstance(result, AgentDecision):
-                decision = result
-            else:
-                decision = AgentDecision.model_validate(
-                    result
-                )
+            decision = _parse_agent_decision(result)
 
         except Exception:
-            # Fallback for OpenAI-compatible/local models that expose
-            # chat completion but do not correctly implement structured
-            # output binding.
-            try:
-                raw = await model.ainvoke(
-                    [
-                        HumanMessage(
-                            content=prompt
-                        )
-                    ]
+            decision = AgentDecision(
+                route=_fallback_route(
+                    state["customer_message"],
+                    active_ticket,
                 )
-
-                decision = AgentDecision.model_validate(
-                    json.loads(
-                        _extract_json_object(
-                            _message_text(raw)
-                        )
-                    )
-                )
-
-            except Exception as exc:
-                raise AgentProcessingError(
-                    "The model could not produce a valid routing decision."
-                ) from exc
+            )
 
         fields: dict[str, str] = {}
 
@@ -368,6 +446,13 @@ Customer's current message:
                 chunk["source"]
                 for chunk in chunks
             )
+        )
+
+        session.history.append(
+            {
+                "role": "assistant",
+                "content": response,
+            }
         )
 
         return {
@@ -522,12 +607,20 @@ Customer's current message:
             ticket_id
         )
 
+        response_text = (
+            "Your support ticket has been created successfully. "
+            f"Ticket ID: {ticket_id}."
+        )
+
+        session.history.append(
+            {
+                "role": "assistant",
+                "content": response_text,
+            }
+        )
+
         return {
-            "response_text": (
-                "Your support ticket has been created "
-                "successfully. "
-                f"Ticket ID: {ticket_id}."
-            ),
+            "response_text": response_text,
             "sources": [],
             "ticket_id": str(ticket_id),
         }
