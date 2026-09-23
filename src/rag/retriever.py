@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 from langchain_chroma import Chroma
@@ -7,46 +8,129 @@ from langchain_chroma import Chroma
 from src.config import Settings
 from src.rag.document_loader import load_support_documents, split_support_documents
 from src.rag.embeddings import build_embeddings
+from src.utils.errors import ComponentNotReadyError
 
 
 class KnowledgeRetriever:
-    """Persistent Chroma retrieval scaffold with stable output contracts."""
+    """Persistent Chroma-backed knowledge retriever."""
+
+    MIN_RELEVANCE_SCORE = 0.25
 
     def __init__(self, settings: Settings, documents_dir: Path) -> None:
         self.settings = settings
         self.documents_dir = documents_dir
         self._store: Chroma | None = None
 
+    @staticmethod
+    def _document_id(source: str, content: str) -> str:
+        """Create a deterministic ID for a knowledge-base chunk."""
+        raw = f"{source}\n{content}".encode("utf-8")
+        return hashlib.sha256(raw).hexdigest()
+
+    @staticmethod
+    def _safe_source(source: object) -> str:
+        """Return only a safe source filename."""
+        value = str(source or "").strip()
+        if not value:
+            return "unknown"
+
+        return Path(value).name
+
     async def initialize(self) -> None:
-        documents = split_support_documents(load_support_documents(self.documents_dir))
+        """Load, split, and persist the support knowledge base."""
+        documents = split_support_documents(
+            load_support_documents(self.documents_dir)
+        )
+
+        if not documents:
+            raise ValueError("No knowledge-base chunks were produced")
+
         embeddings = build_embeddings(self.settings)
 
-        # TODO: Complete persistent Chroma initialization.
-        #
-        # - Resolve ``vector_db_path`` from settings; create only that directory.
-        # - Use ``rag_collection`` as the stable collection name.
-        # - Pass the supplied HuggingFace embedding adapter to Chroma.
-        # - Add the split documents with stable IDs or an equivalent guard.
-        # - Do not duplicate identical chunks on every API restart.
-        # - Preserve the filename held in each document's ``source`` metadata.
-        # - Make initialization repeatable for automated tests and local reloads.
-        # - Assign ``self._store`` only after the usable store is ready.
-        # - Propagate a descriptive failure so FastAPI does not claim readiness.
-        # - Do not download or initialize embeddings inside every search call.
-        _ = (documents, embeddings)
-        raise NotImplementedError
+        vector_db_path = Path(self.settings.vector_db_path)
 
-    async def search(self, query: str, limit: int | None = None) -> list[dict[str, str]]:
-        # TODO: Complete relevance-aware retrieval.
-        #
-        # - Reject or safely return no results for a blank query.
-        # - Raise ComponentNotReadyError if initialization never completed.
-        # - Use the explicit ``limit`` or fall back to ``settings.rag_top_k``.
-        # - Request relevance scores when supported by the selected API.
-        # - Apply and document a threshold or another unknown-answer policy.
-        # - Return at most the requested number of useful chunks.
-        # - Normalize every result to ``content`` and safe ``source`` values.
-        # - Never return local absolute paths or Chroma-specific objects.
-        # - Keep stable ordering from most relevant to least relevant.
-        # - Add tests with deterministic fake embeddings and temporary storage.
-        raise NotImplementedError
+        # Chroma creates the directory itself. We do not create unrelated
+        # directories during initialization.
+        store = Chroma(
+            collection_name=self.settings.rag_collection,
+            embedding_function=embeddings,
+            persist_directory=str(vector_db_path),
+        )
+
+        ids = [
+            self._document_id(
+                str(document.metadata.get("source", "")),
+                document.page_content,
+            )
+            for document in documents
+        ]
+
+        existing = store.get(ids=ids)
+        existing_ids = set(existing.get("ids", []))
+
+        new_documents = []
+        new_ids = []
+
+        for document, document_id in zip(documents, ids):
+            if document_id not in existing_ids:
+                new_documents.append(document)
+                new_ids.append(document_id)
+
+        if new_documents:
+            store.add_documents(
+                documents=new_documents,
+                ids=new_ids,
+            )
+
+        self._store = store
+
+    async def search(
+        self,
+        query: str,
+        limit: int | None = None,
+    ) -> list[dict[str, str]]:
+        """Retrieve relevant knowledge-base chunks."""
+        if self._store is None:
+            raise ComponentNotReadyError(
+                "Knowledge retriever has not been initialized"
+            )
+
+        clean_query = query.strip()
+        if not clean_query:
+            return []
+
+        requested_limit = limit or self.settings.rag_top_k
+
+        if requested_limit <= 0:
+            return []
+
+        results = self._store.similarity_search_with_relevance_scores(
+            clean_query,
+            k=requested_limit,
+        )
+
+        normalized: list[dict[str, str]] = []
+
+        for document, score in results:
+            if score < self.MIN_RELEVANCE_SCORE:
+                continue
+
+            content = document.page_content.strip()
+            source = self._safe_source(
+                document.metadata.get("source")
+            )
+
+            if not content:
+                continue
+
+            normalized.append(
+                {
+                    "content": content,
+                    "source": source,
+                }
+            )
+
+            if len(normalized) >= requested_limit:
+                break
+
+        return normalized
