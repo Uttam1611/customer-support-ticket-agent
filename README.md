@@ -1,133 +1,607 @@
 # Customer Support Ticket Agent
 
-A guided starter project for building a text-based support agent using FastAPI, Streamlit, an open-source LLM, RAG, and a mock ticket tool.
+A full-stack customer support ticket agent that combines persistent RAG-based knowledge retrieval, session-aware conversational ticket creation, FastAPI REST APIs, and a Streamlit chat interface. The system also supports microphone-based speech-to-text (STT) and optional text-to-speech (TTS) playback while keeping the existing text chat workflow unchanged.
 
-Read the separate Assignment Implementation Guide before changing the starter.
+## Features
+
+- **Persistent RAG knowledge retrieval**
+  - Chroma vector database
+  - Stable document IDs
+  - Configurable top-k retrieval
+  - Relevance threshold for unknown/irrelevant questions
+  - Source attribution in responses
+
+- **Conversational support agent**
+  - LangGraph-based workflow
+  - Knowledge-base retrieval before answering
+  - Routing between answering a question and creating a support ticket
+  - Multi-turn session state
+
+- **Support ticket workflow**
+  - Customer name
+  - Customer email
+  - Issue description
+  - Category
+  - Ticket creation after required fields are collected
+  - Duplicate ticket protection
+  - Ticket retrieval through the API
+
+- **REST API**
+  - Health check
+  - Text chat
+  - Ticket retrieval
+  - Speech-to-text
+  - Text-to-speech
+
+- **Streamlit interface**
+  - Session-aware chat
+  - Chat history
+  - Retrieved sources
+  - Ticket ID display
+  - Microphone input
+  - Editable STT transcript
+  - Speaker button for agent responses
+
+- **Testing**
+  - RAG retrieval and relevance policy
+  - Unknown/irrelevant queries
+  - Multi-turn ticket workflow
+  - Ticket retrieval
+  - Missing-field validation
+  - Duplicate protection
+  - Voice service behavior
+  - Graceful failure handling
 
 ## Architecture
 
 ```text
-Streamlit -> FastAPI -> SupportPipeline -> LangGraph workflow
-                                      |-> RAG/Chroma knowledge
-                                      \-> session-bound ticket tool
+                    ┌─────────────────────┐
+                    │  Streamlit Client   │
+                    │                     │
+                    │ Text / Microphone   │
+                    │ Chat / Audio        │
+                    └──────────┬──────────┘
+                               │
+                               ▼
+                    ┌─────────────────────┐
+                    │     FastAPI API     │
+                    │                     │
+                    │ /chat               │
+                    │ /tickets/{id}       │
+                    │ /voice/transcribe   │
+                    │ /voice/synthesize   │
+                    └──────────┬──────────┘
+                               │
+                 ┌─────────────┴─────────────┐
+                 ▼                           ▼
+        ┌─────────────────┐        ┌─────────────────┐
+        │ Support Pipeline│        │  Voice Pipeline │
+        └────────┬────────┘        └────────┬────────┘
+                 │                          │
+                 ▼                          ▼
+        ┌─────────────────┐        ┌─────────────────┐
+        │   LangGraph     │        │ STT / TTS       │
+        │ Support Workflow│        │ Adapters        │
+        └────────┬────────┘        └─────────────────┘
+                 │
+       ┌─────────┼──────────┐
+       ▼         ▼          ▼
+    Retrieve   Decide    Ticket Flow
+       │         │          │
+       ▼         ▼          ▼
+   Chroma DB    LLM     Ticket Storage
+   / RAG                 / Tool
 ```
 
-## What Is Provided
+## Technology Stack
 
-- Request, response, and ticket models.
-- A LangChain `ChatOpenAI` binding for an OpenAI-compatible open-source model.
-- A typed LangGraph state, node skeleton, and routing graph.
-- Document loading, splitting, embeddings, and Chroma component bindings.
-- Session-state data structure.
-- In-memory ticket repository with duplicate protection.
-- Four support-policy documents.
-- FastAPI and Streamlit scaffolding.
-- RAG and agent integration TODOs.
-- Initial repository and session tests.
+- Python 3.11+
+- FastAPI
+- Uvicorn
+- Streamlit
+- LangChain
+- LangGraph
+- Chroma
+- Pydantic
+- SQLAlchemy / PostgreSQL components where configured by the project
+- Local or OpenAI-compatible LLM endpoint
+- Google Speech Recognition for STT
+- Edge TTS for TTS
+- Pytest
 
-## Candidate Work
+## Project Structure
 
-Complete the TODOs in:
+```text
+customer_support_ticket_agent/
+│
+├── src/
+│   ├── api/
+│   │   └── server.py
+│   ├── llm/
+│   │   ├── client.py
+│   │   └── workflow.py
+│   ├── rag/
+│   │   └── retriever.py
+│   ├── sessions/
+│   │   └── store.py
+│   ├── voice/
+│   │   ├── contracts.py
+│   │   ├── models.py
+│   │   ├── pipeline.py
+│   │   ├── stt.py
+│   │   └── tts.py
+│   ├── pipeline.py
+│   ├── config.py
+│   └── ...
+│
+├── knowledge_base/
+│   └── *.md
+│
+├── tests/
+│   └── ...
+│
+├── streamlit_app.py
+├── requirements.txt
+├── .env.example
+└── README.md
+```
 
-- `src/rag/retriever.py`
-- `src/llm/workflow.py`
-- `src/pipeline.py`
-- `streamlit_app.py`
+## Prerequisites
 
-You may add or reorganize files when the resulting design remains clear and testable.
+- Python 3.11 or newer
+- `pip`
+- A configured LLM endpoint compatible with the project's LangChain/OpenAI-compatible client
+- Internet access for Google speech recognition and Edge TTS when using those services
+- Windows, Linux, or macOS
 
-Voice providers
----------------
-STT: Google Speech Recognition through the SpeechRecognition library.
-It was selected because it provides a lightweight individual STT adapter
-without introducing a complete conversational framework.
+## Installation
 
-TTS: Microsoft Edge TTS through the edge-tts library.
-It was selected because it provides direct text-to-speech synthesis without
-requiring an API key or a high-level conversational platform.
+Clone or extract the project and enter the project directory:
 
-Voice input is converted to editable text before entering the existing
-POST /chat workflow. TTS is generated only when the user activates the
-speaker control for an assistant response.pytest -q
+```bash
+cd customer_support_ticket_agent
+```
 
-## Requirements
-
-- Python 3.11 or newer.
-- An OpenAI-compatible endpoint serving an open-source instruction model, or an equivalent open-source model integration.
-- Enough local space for the selected embedding model and vector index.
-
-## Setup
+Create and activate a virtual environment:
 
 ### Windows PowerShell
 
 ```powershell
-py -3.11 -m venv .venv
+python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
-Copy-Item .env.example .env
 ```
 
-### Linux
+### Linux / macOS
 
-```sh
+```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -r requirements.txt
+```
+
+Install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+Create the environment file:
+
+```bash
+copy .env.example .env
+```
+
+For Linux/macOS:
+
+```bash
 cp .env.example .env
 ```
 
-### macOS
+Configure the required LLM settings in `.env`.
 
-```sh
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements.txt
-cp .env.example .env
+## Running the Application
+
+### Start the FastAPI backend
+
+The backend can be started with:
+
+```bash
+uvicorn src.api.server:app --host 127.0.0.1 --port 8001
 ```
 
-Configure `.env` for the selected model endpoint. Do not commit credentials.
+The backend health endpoint is:
 
-## Run
-
-Start the API:
-
-```sh
-uvicorn src.api.server:app --reload --host "${API_HOST:-127.0.0.1}" --port "${API_PORT:-8000}"
+```text
+http://127.0.0.1:8001/health
 ```
 
-In another terminal, start the UI:
+### Start the Streamlit frontend
 
-```sh
-streamlit run streamlit_app.py --server.address "${STREAMLIT_HOST:-127.0.0.1}" --server.port "${STREAMLIT_PORT:-8501}"
+Open a second terminal with the virtual environment activated.
+
+Windows PowerShell:
+
+```powershell
+$env:API_BASE_URL="http://127.0.0.1:8001"
+streamlit run streamlit_app.py
 ```
 
-The default UI is `http://localhost:8501`; FastAPI documentation is `http://localhost:8000/docs`. Override both ports through `.env` and the corresponding command-line values when necessary.
+The Streamlit application will normally be available at:
 
-## Test
+```text
+http://localhost:8501
+```
 
-```sh
+## API Endpoints
+
+### Health
+
+```http
+GET /health
+```
+
+Example:
+
+```bash
+curl http://127.0.0.1:8001/health
+```
+
+Expected response when the application is ready:
+
+```json
+{
+  "status": "ready"
+}
+```
+
+### Chat
+
+```http
+POST /chat
+```
+
+Example request:
+
+```json
+{
+  "session_id": "demo-session",
+  "message": "How long does standard shipping take?"
+}
+```
+
+Example PowerShell request:
+
+```powershell
+$body = @{
+    session_id = "demo-session"
+    message = "How long does standard shipping take?"
+} | ConvertTo-Json
+
+Invoke-RestMethod `
+    -Uri "http://127.0.0.1:8001/chat" `
+    -Method Post `
+    -ContentType "application/json" `
+    -Body $body
+```
+
+The response contains the agent response and may include retrieved source information and a ticket ID when a ticket is created.
+
+### Retrieve a Ticket
+
+```http
+GET /tickets/{ticket_id}
+```
+
+Example:
+
+```bash
+curl http://127.0.0.1:8001/tickets/TICKET_ID
+```
+
+Replace `TICKET_ID` with the ID returned after ticket creation.
+
+### Speech-to-Text
+
+```http
+POST /voice/transcribe
+```
+
+The endpoint accepts an uploaded WAV audio file and returns a transcription response.
+
+Example response structure:
+
+```json
+{
+  "success": true,
+  "transcript": "I have a problem with my payment",
+  "processing_time_ms": 1234
+}
+```
+
+The transcript is displayed in the Streamlit interface before it is submitted to the existing text agent, allowing the user to correct it.
+
+### Text-to-Speech
+
+```http
+POST /voice/synthesize
+```
+
+The endpoint accepts the displayed agent response text and returns playable audio.
+
+The Streamlit interface generates audio only when the user selects the speaker control. Audio is associated with the corresponding agent message.
+
+## RAG Workflow
+
+The RAG component loads the knowledge base into a persistent Chroma collection.
+
+The retrieval process:
+
+```text
+User Query
+    ↓
+Retriever
+    ↓
+Chroma Similarity Search
+    ↓
+Relevance Filtering
+    ↓
+Top-k Relevant Documents
+    ↓
+LangGraph Agent
+    ↓
+Grounded Answer + Sources
+```
+
+The retriever uses deterministic document identifiers so that repeated initialization does not create duplicate documents.
+
+Queries with insufficient relevant evidence are handled using the configured relevance threshold rather than blindly generating an answer from unrelated knowledge-base content.
+
+## Agent Workflow
+
+The conversational workflow is implemented with LangGraph.
+
+```text
+User Message
+     ↓
+Retrieve
+     ↓
+Decide
+     ├───────────────┐
+     │               │
+     ▼               ▼
+   Answer          Ticket
+     │               │
+     │        Collect Missing Fields
+     │               │
+     │               ▼
+     │        Validate Ticket Data
+     │               │
+     │               ▼
+     │          Create Ticket
+     │
+     └───────► Response
+```
+
+The ticket workflow collects:
+
+1. Customer name
+2. Customer email
+3. Issue description
+4. Category
+
+Supported categories include:
+
+```text
+order
+payment
+account
+technical
+other
+```
+
+The system maintains state using a client-supplied `session_id`, allowing information to be collected over multiple messages.
+
+## Voice Workflow
+
+Voice functionality is integrated into the existing application rather than creating a separate voice agent.
+
+### Speech-to-Text
+
+```text
+Microphone
+    ↓
+Audio Recording
+    ↓
+/voice/transcribe
+    ↓
+Editable Transcript
+    ↓
+User Confirmation
+    ↓
+Existing /chat Endpoint
+    ↓
+Existing Agent Workflow
+```
+
+The transcript must be explicitly submitted after editing. Voice input therefore follows the same RAG, session, routing, and ticket workflow as typed input.
+
+### Text-to-Speech
+
+```text
+Completed Agent Response
+          ↓
+     Speaker Button
+          ↓
+   /voice/synthesize
+          ↓
+      Audio Bytes
+          ↓
+       Playback
+```
+
+TTS is not autoplayed. A synthesis failure does not remove or invalidate the original text response.
+
+## Testing
+
+Run the complete test suite with:
+
+```bash
 pytest -q
 ```
 
-Useful manual requests:
+The test suite covers the core behavior required by the implementation, including:
 
-```sh
-curl http://localhost:8000/health
+- RAG retrieval
+- Relevant versus irrelevant queries
+- Stable retrieval IDs
+- Session state
+- Multi-turn ticket creation
+- Missing ticket fields
+- Ticket validation
+- Duplicate ticket protection
+- Ticket retrieval
+- Voice STT success and failure cases
+- Voice TTS success and failure cases
+- API/pipeline error handling
 
-curl -X POST http://localhost:8000/chat \
-  -H 'Content-Type: application/json' \
-  -d '{"session_id":"demo-1","message":"How long does standard shipping take?"}'
+## Example User Flow
+
+### Knowledge-base question
+
+```text
+User:
+How long does standard shipping take?
+
+Agent:
+Standard delivery usually takes three to five business days.
+
+Sources:
+shipping.md
 ```
 
-For Windows PowerShell, use `Invoke-RestMethod` or place the equivalent JSON request in FastAPI's `/docs` interface.
+### Ticket creation
 
-## Completion Checklist
+```text
+User:
+I need to report a technical issue.
 
-- RAG answers use the supplied documents and return source names.
-- Unknown answers are not fabricated.
-- Ticket details are collected over multiple turns.
-- Tickets are created only after validation.
-- Repeated requests in one session do not create duplicate tickets.
-- API and Streamlit failures are displayed clearly.
-- Automated tests cover the principal success and failure paths.
-- This README is updated with the candidate's final architecture, provider choices, platform notes, and troubleshooting guidance.
+Agent:
+I can create a ticket. What is your name?
+
+User:
+Uttam Singh
+
+Agent:
+What email address should I associate with the ticket?
+
+User:
+example@email.com
+
+Agent:
+Please describe the issue.
+
+User:
+The application is failing when I submit a request.
+
+Agent:
+What category does this issue belong to?
+
+User:
+technical
+
+Agent:
+Ticket created successfully.
+Ticket ID: ...
+```
+
+## Configuration
+
+Configuration is loaded through environment variables.
+
+Important settings include:
+
+```text
+LLM_BASE_URL
+LLM_API_KEY
+LLM_MODEL
+VECTOR_DB_PATH
+EMBEDDING_MODEL
+RAG_COLLECTION
+RAG_TOP_K
+RAG_RELEVANCE_THRESHOLD
+API_HOST
+API_PORT
+STREAMLIT_HOST
+STREAMLIT_PORT
+```
+
+Do not commit real API keys or secrets to the repository.
+
+Use `.env.example` to document required configuration without exposing credentials.
+
+## Error Handling
+
+The API distinguishes between service readiness and processing failures.
+
+Examples include:
+
+- Backend not ready
+- Invalid or blank session IDs
+- Invalid or blank messages
+- Empty voice recordings
+- Unsupported audio formats
+- Speech recognition failures
+- TTS failures
+- Invalid model routing decisions
+- Insufficient RAG evidence
+
+Voice failures are recoverable and do not replace the existing text-agent response with an error state.
+
+## Git Workflow
+
+The project was developed incrementally using Git commits for major implementation stages.
+
+Example:
+
+```bash
+git log --oneline
+```
+
+The final repository should contain the completed source code, tests, configuration examples, knowledge base, and documentation.
+
+## Submission Checklist
+
+Before submission:
+
+- [ ] Application starts successfully
+- [ ] `/health` returns a ready status
+- [ ] Text chat works
+- [ ] RAG answers include relevant sources
+- [ ] Ticket creation works across multiple turns
+- [ ] Ticket ID is returned after creation
+- [ ] Ticket retrieval works
+- [ ] Microphone transcription works
+- [ ] Transcript can be edited before submission
+- [ ] TTS speaker control works
+- [ ] TTS does not autoplay
+- [ ] Voice failures do not break text chat
+- [ ] `pytest -q` passes
+- [ ] README is included
+- [ ] `.env.example` is included
+- [ ] No secrets are included
+- [ ] Final project ZIP is created
+- [ ] Demonstration video is included
+- [ ] Google Drive sharing is set to anyone with the link as Viewer
+
+## Demonstration
+
+The demonstration should show the complete working flow:
+
+1. Start the application.
+2. Ask a knowledge-base question and show source attribution.
+3. Create a support ticket through multiple turns.
+4. Show the generated ticket ID.
+5. Demonstrate microphone transcription.
+6. Edit and submit the transcript.
+7. Demonstrate speaker-button TTS playback.
+8. Run the test suite and show the result.
+
