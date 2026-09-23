@@ -3,7 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
+from src.api.server import app, pipeline
 from src.config import Settings
 from src.models import ChatResponse
 from src.pipeline import SupportPipeline

@@ -122,11 +122,6 @@ class SupportPipeline:
     ) -> ChatResponse:
         """Process one customer turn through the support workflow."""
 
-        if not self.ready or self.workflow is None:
-            raise ComponentNotReadyError(
-                "Support pipeline is not ready"
-            )
-
         clean_session = self._clean_text(
             session_id,
             "session_id",
@@ -136,6 +131,11 @@ class SupportPipeline:
             message,
             "message",
         )
+
+        if not self.ready or self.workflow is None:
+            raise ComponentNotReadyError(
+                "Support pipeline is not ready"
+            )
 
         session = self.sessions.get_or_create(
             clean_session

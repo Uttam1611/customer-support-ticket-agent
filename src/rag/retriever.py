@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from pathlib import Path
 
 from langchain_chroma import Chroma
@@ -14,8 +15,6 @@ from src.utils.errors import ComponentNotReadyError
 class KnowledgeRetriever:
     """Persistent Chroma-backed knowledge retriever."""
 
-    MIN_RELEVANCE_SCORE = 0.25
-
     def __init__(self, settings: Settings, documents_dir: Path) -> None:
         self.settings = settings
         self.documents_dir = documents_dir
@@ -26,6 +25,11 @@ class KnowledgeRetriever:
         """Create a deterministic ID for a knowledge-base chunk."""
         raw = f"{source}\n{content}".encode("utf-8")
         return hashlib.sha256(raw).hexdigest()
+
+    @staticmethod
+    def _stable_id(source: str, content: str) -> str:
+        """Backward-compatible alias for deterministic chunk IDs."""
+        return KnowledgeRetriever._document_id(source, content)
 
     @staticmethod
     def _safe_source(source: object) -> str:
@@ -84,20 +88,39 @@ class KnowledgeRetriever:
 
         self._store = store
 
+    @staticmethod
+    def _keyword_overlap(query: str, text: str) -> float:
+        """Reward exact token overlap to keep topical matches ahead."""
+        query_tokens = {
+            token
+            for token in re.findall(r"[a-z0-9]+", query.lower())
+            if token
+        }
+
+        if not query_tokens:
+            return 0.0
+
+        text_lower = text.lower()
+        hits = sum(
+            1 for token in query_tokens if token in text_lower
+        )
+        return hits / len(query_tokens)
+
     async def search(
         self,
         query: str,
         limit: int | None = None,
     ) -> list[dict[str, str]]:
         """Retrieve relevant knowledge-base chunks."""
+        clean_query = str(query or "").strip()
+
+        if not clean_query:
+            return []
+
         if self._store is None:
             raise ComponentNotReadyError(
                 "Knowledge retriever has not been initialized"
             )
-
-        clean_query = query.strip()
-        if not clean_query:
-            return []
 
         requested_limit = limit or self.settings.rag_top_k
 
@@ -109,10 +132,11 @@ class KnowledgeRetriever:
             k=requested_limit,
         )
 
-        normalized: list[dict[str, str]] = []
+        threshold = self.settings.rag_relevance_threshold
+        ranked_results: list[tuple[float, float, str, str]] = []
 
         for document, score in results:
-            if score < self.MIN_RELEVANCE_SCORE:
+            if score < threshold:
                 continue
 
             content = document.page_content.strip()
@@ -123,14 +147,25 @@ class KnowledgeRetriever:
             if not content:
                 continue
 
+            overlap = self._keyword_overlap(clean_query, content)
+            ranked_results.append((overlap, score, source, content))
+
+        ranked_results.sort(
+            key=lambda item: (item[0], item[1]),
+            reverse=True,
+        )
+
+        normalized: list[dict[str, str]] = []
+
+        for _, _, source, content in ranked_results:
+            if len(normalized) >= requested_limit:
+                break
+
             normalized.append(
                 {
                     "content": content,
                     "source": source,
                 }
             )
-
-            if len(normalized) >= requested_limit:
-                break
 
         return normalized

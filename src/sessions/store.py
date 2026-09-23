@@ -19,16 +19,60 @@ class ConversationState:
             "issue_description": self.issue_description,
             "category": self.category,
         }
-        return [name for name, value in values.items() if not value]
+
+        return [
+            name
+            for name, value in values.items()
+            if not value
+        ]
+
+    def update_fields(
+        self,
+        values: dict[str, str | None],
+    ) -> None:
+        for field_name in (
+            "customer_name",
+            "customer_email",
+            "issue_description",
+            "category",
+        ):
+            value = values.get(field_name)
+
+            if value is not None and str(value).strip():
+                setattr(
+                    self,
+                    field_name,
+                    str(value).strip(),
+                )
 
 
 class SessionStore:
-    """Supplied in-memory isolation boundary for conversation state."""
+    """In-memory storage for per-session conversation state."""
 
     def __init__(self) -> None:
         self._sessions: dict[str, ConversationState] = {}
 
     def get_or_create(self, session_id: str) -> ConversationState:
-        if not session_id.strip():
+        clean_session_id = str(session_id).strip()
+
+        if not clean_session_id:
             raise ValueError("session_id must not be blank")
-        return self._sessions.setdefault(session_id, ConversationState())
+
+        session = self._sessions.get(clean_session_id)
+
+        if session is None:
+            session = ConversationState()
+            self._sessions[clean_session_id] = session
+
+        return session
+
+    def get(self, session_id: str) -> ConversationState | None:
+        clean_session_id = str(session_id).strip()
+
+        if not clean_session_id:
+            return None
+
+        return self._sessions.get(clean_session_id)
+
+    def all(self) -> list[ConversationState]:
+        return list(self._sessions.values())
